@@ -30,7 +30,7 @@ class MPS:
 
     def __init__(self, Bs, Ss):
         self.Bs = Bs
-        self.Ss = [jax.lax.stop_gradient(s) for s in Ss]
+        self.Ss = Ss #stop_gradient(s) for s in Ss]
         self.L = len(Bs)
 
     @jit
@@ -39,15 +39,15 @@ class MPS:
         return MPS([jnp.array(B) for B in self.Bs], [jnp.array(S) for S in self.Ss])
     
     @jit
-    def norm(self):
-        """Calculate the norm of the MPS, which is the square root of the overlap with itself."""
-        return jnp.sqrt(overlap(self, self).real)
+    def norm_squared(self):
+        """Calculate the norm squared of the MPS, which is the overlap with itself."""
+        return overlap(self, self).real
     
     @jit
     def normalize(self):
         center = self.L // 2
         psi = self.copy()
-        psi.Bs[center] = psi.Bs[center] / psi.norm()
+        psi.Bs[center] = psi.Bs[center] / jnp.sqrt(psi.norm_squared())
         return psi
 
     @jit
@@ -58,19 +58,18 @@ class MPS:
         Does not modify self.
         """
         psi = self.copy() # Create a copy to avoid modifying self
-        # psi.Ss[0] = jnp.ones((1,))
         chis = psi.get_chi()
         for i in range(psi.L - 1):
             chivC = chis[i]
             j = i + 1
             theta = psi.get_theta2(i)  # vL i j vR
 
-            Ai, Sj, Bj = split_truncate_theta(theta, chivC)
+            Ai, Sj, Bj = split_theta(theta, chivC)
 
             # put back into MPS
             Gi = jnp.tensordot(jnp.diag(psi.Ss[i]**(-1)), Ai, axes=[1, 0])  # vL [vL*], [vL] i vC
             psi.Bs[i] = jnp.tensordot(Gi, jnp.diag(Sj), axes=[2, 0])  # vL i [vC], [vC] vC
-            psi.Ss[j] = jax.lax.stop_gradient(Sj)  # vC
+            psi.Ss[j] = Sj #jax.lax.stop_gradient(Sj)  # vC
             psi.Bs[j] = Bj  # vC j vR
         return psi
     
@@ -153,14 +152,14 @@ def overlap(mps_bra, mps_ket):
     for n in range(L):
         # M_ket: (vL, i, vR)
         M_ket = mps_ket.Bs[n]
-        contr = jnp.tensordot(contr, M_ket, axes=(1, 0))  # (vR*, vL) -> (vR*, i, vR)
+        contr = jnp.tensordot(contr, M_ket, axes=(1, 0)) # vR* [vR], [vL] j vR contract indices in []
         # M_bra: (vL, i, vR)
         M_bra = mps_bra.Bs[n].conj()
-        contr = jnp.tensordot(M_bra, contr, axes=([0, 1], [0, 1]))  # (vL*, i*, vR*), (vL, i, vR)
+        contr = jnp.tensordot(M_bra, contr, axes=([0, 1], [0, 1])) # [vL*] [j*] vR*, [vR*] [j] vR
     assert contr.shape == (1, 1)
     return contr[0, 0]
 
-def init_spinup_MPS(L, chi_max, noise=False, eps=1e-4, key=None):
+def init_spinup_MPS(L: int, chi_max: int, noise: bool = False, eps: float = 1e-4, key=None) -> MPS:
     """
     Create an all-up spin MPS with maximum bond dimension chi_max.
     Optionally add small noise to each tensor.
@@ -190,21 +189,28 @@ def init_spinup_MPS(L, chi_max, noise=False, eps=1e-4, key=None):
         Bs.append(tensor)
     Ss = [jnp.pad(jnp.ones([1], jnp.float64), (0, chi[i]-1)) for i in range(L)]
     mps = MPS(Bs, Ss)
-    if noise:
-        mps = mps.canonicalize() # Canonicalize to ensure the noise is properly incorporated
-        # mps = mps.normalize()  # Not needed, as canonicalization already normalizes the MPS
+    mps = mps.canonicalize() # Canonicalize to ensure the noise is properly incorporated
+    # mps = mps.normalize()  # Not needed, as canonicalization already normalizes the MPS
     return mps
 
+def init_spinup_MPS_old(L):
+    import numpy as np
+    """Return a product state with all spins up as an MPS"""
+    B = np.zeros([1, 2, 1], np.float64)
+    B[0, 0, 0] = 1.
+    S = np.ones([1], np.float64)
+    Bs = [B.copy() for i in range(L)]
+    Ss = [S.copy() for i in range(L)]
+    return MPS(Bs, Ss)
+
 @partial(jit, static_argnames=["chivC"])
-def split_truncate_theta(theta, chivC):
-    """Split and truncate a two-site wave function in mixed canonical form.
+def split_theta(theta, chivC):
+    """Split a two-site wave function in mixed canonical form.
 
     Split a two-site wave function as follows::
           vL --(theta)-- vR     =>    vL --(A)--diag(S)--(B)-- vR
                 |   |                       |             |
                 i   j                       i             j
-
-    Afterwards, truncate in the new leg (labeled ``vC``).
 
     Parameters
     ----------
@@ -231,6 +237,51 @@ def split_truncate_theta(theta, chivC):
     X, Y, Z = X[:, :chivC], Y[:chivC], Z[:chivC, :]
 
     Y = jnp.maximum(Y, 1e-12)  # avoid division by zero
+
+    # renormalize
+    S = Y / jnp.linalg.norm(Y)  # == Y/sqrt(sum(Y**2))
+
+    # split legs of X and Z
+    A = jnp.reshape(X, [chivL, dL, chivC])
+    B = jnp.reshape(Z, [chivC, dR, chivR])
+    return A, S, B
+
+def split_truncate_theta(theta, chi_max, eps):
+    """Split and truncate a two-site wave function in mixed canonical form.
+
+    Split a two-site wave function as follows::
+          vL --(theta)-- vR     =>    vL --(A)--diag(S)--(B)-- vR
+                |   |                       |             |
+                i   j                       i             j
+
+    Afterwards, truncate in the new leg (labeled ``vC``).
+
+    Parameters
+    ----------
+    theta : jnp.Array[ndim=4]
+        Two-site wave function in mixed canonical form, with legs ``vL, i, j, vR``.
+    chi_max : int
+        Maximum number of singular values to keep
+    eps : float
+        Discard any singular values smaller than that.
+
+    Returns
+    -------
+    A : jnp.Array[ndim=3]
+        Left-canonical matrix on site i, with legs ``vL, i, vC``
+    S : jnp.Array[ndim=1]
+        Singular/Schmidt values.
+    B : jnp.Array[ndim=3]
+        Right-canonical matrix on site j, with legs ``vC, j, vR``
+    """
+    chivL, dL, dR, chivR = theta.shape
+    theta = jnp.reshape(theta, [chivL * dL, dR * chivR])
+
+    X, Y, Z = jnp.linalg.svd(theta, full_matrices=False) # returns Y sorted in descending order
+    
+    # truncate
+    chivC = min(chi_max, jnp.sum(Y > eps))
+    X, Y, Z = X[:, :chivC], Y[:chivC], Z[:chivC, :]
 
     # renormalize
     S = Y / jnp.linalg.norm(Y)  # == Y/sqrt(sum(Y**2))
