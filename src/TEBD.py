@@ -80,18 +80,22 @@ class TEBD_engine:
             return energy_TEBD
 
         elif order == 2:
-            self.update_bond(0, "dt/2")
-            for n in range(steps):
-                for k in [0, 1]:  # even, odd
+            for i_bond in range(0, Nbonds, 2): # even bonds
+                self.update_bond(i_bond, "half_dt")
+            for i_bond in range(1, Nbonds, 2): # odd bonds
+                self.update_bond(i_bond, "dt")
+            energy_TEBD.append(self.model.energy(self.psi))
+            for n in range(steps - 1):
+                for k in [0, 1]:  # even and odd
                     for i_bond in range(k, Nbonds, 2):
-                        if n == 0 and k == 0:
-                            self.update_bond(i_bond, "dt/2")
-                        else:
-                            self.update_bond(i_bond, "dt")
+                        self.update_bond(i_bond, "dt")
                 energy_TEBD.append(self.model.energy(self.psi))
-            for i_bond in range(0, Nbonds, 2): # last even bond
-                self.update_bond(i_bond, "dt/2")
+            for i_bond in range(0, Nbonds, 2): # even bonds
+                self.update_bond(i_bond, "half_dt")
+            energy_TEBD.pop()
+            energy_TEBD.append(self.model.energy(self.psi))
             return energy_TEBD
+        
         else:
             raise ValueError("order must be 1 or 2")
     
