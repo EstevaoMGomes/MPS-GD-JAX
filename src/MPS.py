@@ -44,6 +44,54 @@ class MPS:
         return overlap(self, self).real
     
     @jit
+    def norm_squared_grad(self):
+        """
+        Compute the gradient of the norm squared with respect to the MPS tensors.
+        Args:
+            psi: MPS object
+        Returns:
+            Gradient of the norm squared with respect to the MPS tensors.
+        """
+        grad = []
+
+        contr_left = jnp.ones((1, 1), dtype=self.Bs[0].dtype)
+        contr_right = jnp.ones((1, 1), dtype=self.Bs[0].dtype)
+
+        left_blocks = [contr_left]
+        right_blocks = [contr_right]
+
+        for n in range(self.L - 1):
+            M_bra = self.Bs[n].conj() # vL* i* vR*
+            M_ket = self.Bs[n]        # vL i vR
+
+            contr_left = jnp.tensordot(contr_left, M_bra, [0, 0])                 # [vR*] vR, [vL*] i* vR*
+            contr_left = jnp.tensordot(contr_left, M_ket, axes=([0, 1], [0, 1]))  # [vR] [i*] vR*, [vL] [i] vR
+
+            left_blocks.append(contr_left)
+
+        for n in reversed(range(1, self.L)):
+            M_bra = self.Bs[n].conj() # vL* i* vR*
+            M_ket = self.Bs[n]        # vL i vR
+
+            contr_right = jnp.tensordot(M_bra, contr_right, [2, 0])                 # vL* i* [vR*], [vL*] vL 
+            contr_right = jnp.tensordot(contr_right, M_ket, axes=([1, 2], [1, 2]))  # vL* [i*] [vL], vL [i] [vR]
+
+            right_blocks.append(contr_right)
+        
+        for n in range(self.L):
+            M_ket = self.Bs[n] # vL i vR
+            contr_left = left_blocks[n]                # vR* vR
+            contr_right = right_blocks[self.L - n - 1] # vL* vL
+
+            grad_n = jnp.tensordot(contr_left, M_ket, [1, 0])   # vR* [vR], [vL] i vR
+            grad_n = jnp.tensordot(grad_n, contr_right, [2, 1]) # vR* i [vR], vL* [vL]
+
+            grad.append(2*grad_n)
+
+        assert all(grad[i].shape == self.Bs[i].shape for i in range(self.L))
+        return grad
+    
+    @jit
     def normalize(self):
         center = self.L // 2
         psi = self.copy()
@@ -150,11 +198,10 @@ def overlap(mps_bra, mps_ket):
     L = len(mps_bra.Bs)
     contr = jnp.ones((1, 1), dtype=mps_bra.Bs[0].dtype)
     for n in range(L):
-        # M_ket: (vL, i, vR)
-        M_ket = mps_ket.Bs[n]
-        contr = jnp.tensordot(contr, M_ket, axes=(1, 0)) # vR* [vR], [vL] j vR contract indices in []
-        # M_bra: (vL, i, vR)
-        M_bra = mps_bra.Bs[n].conj()
+        M_bra = mps_bra.Bs[n].conj() # vL* i* vR*
+        M_ket = mps_ket.Bs[n]        # vL i vR
+
+        contr = jnp.tensordot(contr, M_ket, axes=(1, 0)) # vR* [vR], [vL] j vR
         contr = jnp.tensordot(M_bra, contr, axes=([0, 1], [0, 1])) # [vL*] [j*] vR*, [vR*] [j] vR
     assert contr.shape == (1, 1)
     return contr[0, 0]

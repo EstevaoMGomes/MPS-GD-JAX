@@ -106,17 +106,76 @@ class TFIModel:
         assert psi.L == self.L
         left_vec = jnp.array([1, 0, 0], dtype=psi.Bs[0].dtype)
         contr = left_vec.reshape(1, 3, 1)
-        for n in range(self.L):
-            M_bra = psi.Bs[n].conj() # vL*, i*, vR*
-            M_ket = psi.Bs[n]        # vL , i , vR
-            W = self.H_mpo[n]        # wL , wR, i,  i*
 
-            contr = jnp.tensordot(contr, M_bra, axes=([0], [0]))        # wL,  vL, i*, vR*
-            contr = jnp.tensordot(contr, W, axes=([0, 2], [0, 2]))      # vR*, wR, i*, i*
-            contr = jnp.tensordot(contr, M_ket, axes=([0, 3], [0, 1]))  # vR*, vR
+        for n in range(self.L):
+            M_bra = psi.Bs[n].conj() # vL* i* vR*
+            M_ket = psi.Bs[n]        # vL i vR
+            W = self.H_mpo[n]        # wL wR i* i
+
+            contr = jnp.tensordot(contr, M_bra, [0, 0])                 # [vR*] wR vR, [vL*] i* vR*
+            contr = jnp.tensordot(contr, W, axes=([0, 2], [0, 2]))      # [wR] vR [i*] vR*, [wL] wR [i*] i
+            contr = jnp.tensordot(contr, M_ket, axes=([0, 3], [0, 1]))  # [vR] vR* wR [i], [vL] [i] vR
 
         assert contr.shape == (1, 3, 1)
         return contr[0, 2, 0] # right_vec = jnp.array([0, 0, 1], dtype=psi.Bs[0].dtype)
+
+    @jit
+    def energy_mpo_grad(self, psi):
+        """
+        Compute the gradient of the energy expectation value with respect to the MPS tensors.
+        Args:
+            psi: MPS object
+        Returns:
+            Gradient of the energy expectation value with respect to the MPS tensors.
+        """
+        assert psi.L == self.L
+
+        grad = []
+
+        left_vec = jnp.array([1, 0, 0], dtype=psi.Bs[0].dtype)
+        right_vec = jnp.array([0, 0, 1], dtype=psi.Bs[0].dtype)
+        contr_left = left_vec.reshape(1, 3, 1)
+        contr_right = right_vec.reshape(1, 3, 1)
+
+        left_blocks = [contr_left]
+        right_blocks = [contr_right]
+
+        for n in range(self.L - 1):
+            M_bra = psi.Bs[n].conj() # vL* i* vR*
+            M_ket = psi.Bs[n]        # vL i vR
+            W = self.H_mpo[n]        # wL wR i* i
+
+            contr_left = jnp.tensordot(contr_left, M_bra, [0, 0])                 # [vR*] wR vR, [vL*] i* vR*
+            contr_left = jnp.tensordot(contr_left, W, axes=([0, 2], [0, 2]))      # [wR] vR [i*] vR*, [wL] wR [i*] i
+            contr_left = jnp.tensordot(contr_left, M_ket, axes=([0, 3], [0, 1]))  # [vR] vR* wR [i], [vL] [i] vR
+
+            left_blocks.append(contr_left)
+
+        for n in reversed(range(1, self.L)):
+            M_bra = psi.Bs[n].conj() # vL* i* vR*
+            M_ket = psi.Bs[n]        # vL i vR
+            W = self.H_mpo[n]        # wL wR i* i
+
+            contr_right = jnp.tensordot(M_bra, contr_right, [2, 0])                 # vL* i* [vR*], [vL*] wL vL 
+            contr_right = jnp.tensordot(contr_right, W, axes=([1, 2], [2, 1]))      # vL* [i*] [wL] vL, wL [wR] [i*] i 
+            contr_right = jnp.tensordot(contr_right, M_ket, axes=([1, 3], [2, 1]))  # vL* [vL] wL [i], vL [i] [vR]
+
+            right_blocks.append(contr_right)
+        
+        for n in range(self.L):
+            M_ket = psi.Bs[n] # vL i vR
+            W = self.H_mpo[n] # wL wR i* i
+            contr_left = left_blocks[n]                # vR* wR vR
+            contr_right = right_blocks[self.L - n - 1] # vL* wL vL
+
+            grad_n = jnp.tensordot(contr_left, M_ket, [2, 0])                  # vR* wR [vR], [vL] i vR
+            grad_n = jnp.tensordot(grad_n, W, axes=([1, 2], [0, 3]))           # vR* [wR] [i] vR, [wL] wR i* [i]
+            grad_n = jnp.tensordot(grad_n, contr_right, axes=([1, 2], [2, 1])) # vR* [vR] [wR] i*, vL* [wL] [vL]
+
+            grad.append(2*grad_n)
+
+        assert all(grad[i].shape == psi.Bs[i].shape for i in range(self.L))
+        return grad
 
     def _tree_flatten(self):
         children = (self._H_bonds,)  # arrays / dynamic values
