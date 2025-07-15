@@ -240,15 +240,40 @@ def init_spinup_MPS(L: int, chi_max: int, noise: bool = False, eps: float = 1e-4
     # mps = mps.normalize()  # Not needed, as canonicalization already normalizes the MPS
     return mps
 
-def init_spinup_MPS_old(L):
-    import numpy as np
-    """Return a product state with all spins up as an MPS"""
-    B = np.zeros([1, 2, 1], np.float64)
-    B[0, 0, 0] = 1.
-    S = np.ones([1], np.float64)
-    Bs = [B.copy() for i in range(L)]
-    Ss = [S.copy() for i in range(L)]
-    return MPS(Bs, Ss)
+def init_spinright_MPS(L: int, chi_max: int, noise: bool = False, eps: float = 1e-4, key=None) -> MPS:
+    """
+    Create an all-right spin MPS with maximum bond dimension chi_max.
+    Optionally add small noise to each tensor.
+    
+    Args:
+        L: int, number of sites
+        chi_max: int, maximum bond dimension (at the center)
+        key: jax.random.PRNGKey or None
+        noise: bool, whether to add noise
+        eps: float, noise amplitude (if noise=True)
+    Returns:
+        mps: list of jnp.ndarray, each of shape (left, 2, right)
+    """
+    # Compute the staircase bond dimensions
+    chi = [min(2**min(i, L-i), chi_max) for i in range(L+1)]
+    shapes = [(chi[i], 2, chi[i+1]) for i in range(L)]
+    Bs = []
+    for left, phys, right in shapes:
+        tensor = jnp.zeros((left, phys, right), dtype=jnp.float64)
+        tensor = tensor.at[0, 0, 0].set(0.5**0.5)
+        tensor = tensor.at[0, 1, 0].set(0.5**0.5)
+        if noise:
+            import jax.random as jr
+            if key is None:
+                key = jr.PRNGKey(42)
+            subkey, key = jr.split(key)
+            tensor += eps * jr.normal(subkey, shape=(left, phys, right), dtype=jnp.float64)
+        Bs.append(tensor)
+    Ss = [jnp.pad(jnp.ones([1], jnp.float64), (0, chi[i]-1)) for i in range(L)]
+    mps = MPS(Bs, Ss)
+    mps = mps.canonicalize() # Canonicalize to ensure the noise is properly incorporated
+    # mps = mps.normalize()  # Not needed, as canonicalization already normalizes the MPS
+    return mps
 
 @partial(jit, static_argnames=["chivC"])
 def split_theta(theta, chivC):
