@@ -1,5 +1,5 @@
 # MPS-GD-JAX: A JAX-based framework for optimizing Matrix Product States (MPS) using Gradient Descent
-This project provides a JAX implementation of the MPS-GD algorithm, which is designed to optimize MPS representations of quantum states.
+This project provides a JAX implementation of the MPS-GD algorithm, which is designed to optimize MPS representations of quantum states. The results are summarized in [`report.pdf`](report.pdf).
 
 ## Features
 - JAX-based implementation for efficient computation and automatic differentiation
